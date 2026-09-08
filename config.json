@@ -1,0 +1,17 @@
+{
+    "dog_width": 140,
+    "egg_width": 90,
+    "move_speed_min": 0.6,
+    "move_speed_max": 6.5,
+    "gravity": 0.6,
+    "hatch_min_ms": 10000,
+    "hatch_max_ms": 20000,
+    "spin_ticks": 45,
+    "spin_frame_count": 12,
+    "animate_interval": 30,
+    "change_dir_chance": 0.02,
+    "max_dogs": 50,
+    "max_eggs": 30,
+    "transparent_color": "magenta",
+    "enable_plugins": true
+}
