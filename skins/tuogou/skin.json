@@ -1,0 +1,9 @@
+{
+  "id": "tuogou",
+  "name": "鸵狗",
+  "dog_image": "dog.png",
+  "egg_image": null,
+  "width": 140,
+  "speed_multiplier": 1.0,
+  "description": "鸵狗皮肤"
+}
