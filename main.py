@@ -113,6 +113,12 @@ class Dog:
         else:
             self._random_speed()
 
+        # 压扁状态（被捶打）
+        self.squash_level = 0.0  # 0=正常, 1=完全压扁
+        self.original_w = self.w
+        self.original_h = self.h
+        self._squash_photo = None  # 保持动态图片引用防止GC
+
     def _random_speed(self):
         """每只狗独立随机速度和方向"""
         cfg = self.app.config
@@ -126,6 +132,16 @@ class Dog:
 
     def update(self):
         cfg = self.app.config
+
+        # 压扁恢复（5秒内逐渐恢复，类似海绵回弹）
+        if self.squash_level > 0:
+            self.squash_level -= 1.0 / 167  # 约5秒恢复（30ms/帧）
+            if self.squash_level < 0:
+                self.squash_level = 0
+            self._update_squash_image()
+            if self.squash_level == 0:
+                # 恢复完成，切回正常皮肤图片
+                self.apply_current_skin()
 
         if self.fly_out:
             self.fly_ticks += 1
@@ -173,10 +189,32 @@ class Dog:
         self.window.geometry(f"+{int(self.x)}+{int(self.y)}")
 
     def on_left_click(self, event):
-        """左键点击：生出一颗鸵鸟蛋"""
-        offset_x = random.randint(-20, 20)
-        self.app.spawn_egg(self.x + offset_x + self.w // 4, self.y)
+        """左键点击：手从上落下捶打这只狗，狗被压扁"""
+        self.app.spawn_hand(self)
         self.app._call_plugins("on_dog_click", self, event)
+
+    def squash(self):
+        """被捶打：完全压扁"""
+        self.squash_level = 1.0
+        self._update_squash_image()
+
+    def _update_squash_image(self):
+        """根据压扁程度动态缩放图片，保持底部位置不变"""
+        original_img = self.app.dog_skin_originals[self.app.current_skin]
+        # 压扁：高度减小60%，宽度增加30%（类似海绵）
+        new_w = int(self.original_w * (1 + 0.3 * self.squash_level))
+        new_h = max(1, int(self.original_h * (1 - 0.6 * self.squash_level)))
+        squashed = original_img.resize((new_w, new_h), _LANCZOS)
+        bg = Image.new("RGB", squashed.size, (255, 0, 255))
+        bg.paste(squashed, (0, 0), squashed)
+        self._squash_photo = ImageTk.PhotoImage(bg)
+        self.label.configure(image=self._squash_photo)
+        # 保持底部位置不变
+        bottom = self.y + self.h
+        self.w = new_w
+        self.h = new_h
+        self.y = max(0, bottom - new_h)
+        self.window.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
 
     def apply_current_skin(self):
         """切换到当前皮肤，保持底部位置不变"""
@@ -276,6 +314,64 @@ class Egg:
         self.window.destroy()
 
 
+class Hand:
+    """捶打动画：手从上方落下，打到狗后狗被压扁，手停留几帧后消失"""
+
+    def __init__(self, app, target_dog):
+        self.app = app
+        self.target = target_dog
+        cfg = app.config
+        self.w = app.hand_w
+        self.h = app.hand_h
+
+        self.window = tk.Toplevel(app.root)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-transparentcolor", cfg["transparent_color"])
+        self.window.configure(bg=cfg["transparent_color"])
+
+        self.label = tk.Label(
+            self.window,
+            image=app.hand_photo,
+            bg=cfg["transparent_color"],
+            bd=0,
+            highlightthickness=0,
+        )
+        self.label.pack()
+
+        # 初始位置在狗的正上方（高出屏幕一段距离）
+        self.x = target_dog.x + target_dog.w // 2 - self.w // 2
+        self.y = target_dog.y - self.h - 200
+        self.dy = 0.0
+        self.hit = False
+        self.stay_ticks = 0
+        self.window.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
+
+    def update(self):
+        if not self.hit:
+            # 重力加速下落
+            self.dy += 2.5
+            self.y += self.dy
+            # 检测是否打到狗（手的底部到达狗的上部）
+            dog_top = self.target.y + self.target.h * 0.15
+            if self.y + self.h >= dog_top:
+                self.hit = True
+                self.target.squash()
+                self.stay_ticks = 6  # 打中后停留6帧
+            self.window.geometry(f"+{int(self.x)}+{int(self.y)}")
+        else:
+            self.stay_ticks -= 1
+            if self.stay_ticks <= 0:
+                self.destroy()
+                return False
+        return True
+
+    def destroy(self):
+        self.window.destroy()
+        if self in self.app.hands:
+            self.app.hands.remove(self)
+
+
 class PluginBase:
     """插件基类，子类可重写需要的钩子方法"""
 
@@ -320,6 +416,7 @@ class App:
 
         # ---- 加载狗皮肤（黑狗 + 鸵狗）----
         self.dog_skins = {}  # {名称: (PhotoImage, width, height)}
+        self.dog_skin_originals = {}  # {名称: resize后的PIL Image，用于动态压扁}
         skin_files = {
             "black": "dogdogdog.png",
             "tuogou": "tuogou.png",
@@ -344,10 +441,34 @@ class App:
             skin_bg.paste(skin_resized, (0, 0), skin_resized)
             photo = ImageTk.PhotoImage(skin_bg)
             self.dog_skins[skin_name] = (photo, cfg["dog_width"], skin_h)
+            self.dog_skin_originals[skin_name] = skin_resized
 
         # 当前皮肤（默认黑狗）
         self.current_skin = "black"
         self.current_dog_photo, self.dog_w, self.dog_h = self.dog_skins["black"]
+
+        # ---- 加载手部图片（捶打动画）----
+        hand_path = os.path.join(img_dir, "hand.webp")
+        if not os.path.exists(hand_path):
+            messagebox.showerror(
+                "启动失败",
+                f"找不到手部素材：\n{hand_path}\n\n请确认 images 文件夹中有 hand.webp"
+            )
+            sys.exit(1)
+        try:
+            hand_original = Image.open(hand_path).convert("RGBA")
+        except Exception as e:
+            messagebox.showerror("启动失败", f"加载手部素材失败：\n{e}")
+            sys.exit(1)
+        hand_w = 100
+        hand_ratio = hand_w / hand_original.width
+        hand_h = max(1, int(hand_original.height * hand_ratio))
+        hand_resized = hand_original.resize((hand_w, hand_h), _LANCZOS)
+        hand_bg = Image.new("RGB", hand_resized.size, (255, 0, 255))
+        hand_bg.paste(hand_resized, (0, 0), hand_resized)
+        self.hand_photo = ImageTk.PhotoImage(hand_bg)
+        self.hand_w = hand_w
+        self.hand_h = hand_h
 
         # ---- 加载鸵鸟蛋图片 ----
         egg_path = os.path.join(img_dir, "鸵鸟蛋.webp")
@@ -385,6 +506,7 @@ class App:
         # ---- 列表 ----
         self.dogs = []
         self.eggs = []
+        self.hands = []
         self.plugins = []
 
         # ---- 右键菜单 ----
@@ -467,11 +589,18 @@ class App:
         self.eggs.append(egg)
         self._call_plugins("on_egg_spawn", egg)
 
+    def spawn_hand(self, target_dog):
+        """生成一只手，从上落下捶打目标狗"""
+        hand = Hand(self, target_dog)
+        self.hands.append(hand)
+
     def animate(self):
         for dog in self.dogs:
             dog.update()
         for egg in self.eggs:
             egg.update()
+        for hand in self.hands[:]:
+            hand.update()
         self._call_plugins("on_update", self)
         self.root.after(self.config["animate_interval"], self.animate)
 
