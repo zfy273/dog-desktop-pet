@@ -87,6 +87,65 @@ python main.py
 
 `plugins/` 目录中自带一个示例插件 `example_monitor.py`，在控制台打印各种事件信息，可作为编写插件的参考。
 
+## 皮肤系统
+
+本项目支持皮肤包格式。每个皮肤是 `skins/` 目录下的一个子文件夹，包含图片和 `skin.json` 配置文件。程序启动时自动扫描所有皮肤，右键换肤菜单中动态列出。
+
+### 制作自定义皮肤
+
+1. 在 `skins/` 目录下新建一个文件夹，例如 `skins/my_skin/`
+2. 放入一张透明背景的 PNG 图片（建议抠好图），命名为 `dog.png`
+3. 在同目录下创建 `skin.json`，内容如下：
+
+```json
+{
+  "id": "my_skin",
+  "name": "我的皮肤",
+  "dog_image": "dog.png",
+  "egg_image": null,
+  "width": 140,
+  "speed_multiplier": 1.0,
+  "description": "这是我自制的皮肤"
+}
+```
+
+4. 重启程序，右键小狗 -> 换肤，即可看到你的皮肤
+
+### skin.json 配置说明
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 皮肤唯一标识，不能与其他皮肤重复 |
+| `name` | string | 是 | 皮肤显示名称（出现在换肤菜单中） |
+| `dog_image` | string | 是 | 狗的图片文件名（相对皮肤目录） |
+| `egg_image` | string/null | 否 | 自定义蛋的图片文件名，null 表示使用默认鸵鸟蛋 |
+| `width` | number | 否 | 狗的显示宽度（像素），默认 140 |
+| `speed_multiplier` | number | 否 | 移动速度倍率，1.0 为正常，0.5 为慢速，2.0 为快速 |
+| `description` | string | 否 | 皮肤描述 |
+
+### 皮肤包目录结构
+
+```
+skins/
+├── black/           # 内置：黑狗
+│   ├── dog.png
+│   └── skin.json
+├── tuogou/          # 内置：鸵狗
+│   ├── dog.png
+│   └── skin.json
+└── my_skin/         # 你的自定义皮肤
+    ├── dog.png
+    ├── egg.png      # 可选：自定义蛋
+    └── skin.json
+```
+
+### 注意事项
+
+- 图片必须是透明背景的 PNG 或 WEBP 格式
+- 图片尺寸建议大于 200x200，程序会自动缩放
+- 皮肤加载失败会在控制台打印警告，不影响其他皮肤使用
+- 欢迎将自制皮肤提交到本仓库的 `skins/` 目录，收录为社区皮肤
+
 ## 项目结构
 
 ```
@@ -97,13 +156,19 @@ python main.py
 ├── 安装环境.bat         # 环境检测与自动安装脚本
 ├── README.md            # 项目说明文档
 ├── plugins.md           # 插件开发指南
-├── plugins/             # 插件目录
-│   └── example_monitor.py  # 示例插件：活动监视器
-└── images/
-    ├── dogdogdog.png    # 黑狗素材（默认皮肤，透明背景）
-    ├── tuogou.png       # 鸵狗素材（可选皮肤，透明背景）
-    ├── hand.webp        # 手部素材（捶打动画，透明背景）
-    └── 鸵鸟蛋.webp      # 鸵鸟蛋素材（透明背景）
+├── .gitignore
+├── images/              # 通用素材（蛋、手）
+│   ├── 鸵鸟蛋.webp
+│   └── hand.webp
+├── skins/               # 皮肤包目录（每个子文件夹是一个皮肤）
+│   ├── black/
+│   │   ├── dog.png
+│   │   └── skin.json
+│   └── tuogou/
+│       ├── dog.png
+│       └── skin.json
+└── plugins/             # 插件目录
+    └── example_monitor.py  # 示例插件：活动监视器
 ```
 
 ## 技术实现

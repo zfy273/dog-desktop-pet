@@ -120,9 +120,10 @@ class Dog:
         self._squash_photo = None  # 保持动态图片引用防止GC
 
     def _random_speed(self):
-        """每只狗独立随机速度和方向"""
+        """每只狗独立随机速度和方向，应用当前皮肤的速度倍率"""
         cfg = self.app.config
-        speed = random.uniform(cfg["move_speed_min"], cfg["move_speed_max"])
+        speed_mult = self.app.dog_skins[self.app.current_skin]["speed_multiplier"]
+        speed = random.uniform(cfg["move_speed_min"], cfg["move_speed_max"]) * speed_mult
         self.dx = speed * random.choice([-1, 1]) * (0.4 + random.random() * 0.6)
         self.dy = speed * random.choice([-1, 1]) * (0.4 + random.random() * 0.6)
         if abs(self.dx) < 0.3:
@@ -200,7 +201,7 @@ class Dog:
 
     def _update_squash_image(self):
         """根据压扁程度动态缩放图片，保持底部位置不变"""
-        original_img = self.app.dog_skin_originals[self.app.current_skin]
+        original_img = self.app.dog_skins[self.app.current_skin]["original"]
         # 压扁：高度减小60%，宽度增加30%（类似海绵）
         new_w = int(self.original_w * (1 + 0.3 * self.squash_level))
         new_h = max(1, int(self.original_h * (1 - 0.6 * self.squash_level)))
@@ -218,8 +219,13 @@ class Dog:
 
     def apply_current_skin(self):
         """切换到当前皮肤，保持底部位置不变"""
-        photo, w, h = self.app.dog_skins[self.app.current_skin]
+        skin = self.app.dog_skins[self.app.current_skin]
+        photo = skin["photo"]
+        w = skin["w"]
+        h = skin["h"]
         bottom = self.y + self.h
+        self.original_w = w
+        self.original_h = h
         self.w = w
         self.h = h
         self.y = max(0, bottom - h)
@@ -236,8 +242,17 @@ class Egg:
     def __init__(self, app, x, y):
         self.app = app
         cfg = app.config
-        self.w = app.egg_w
-        self.h = app.egg_h
+
+        # 选择蛋图片：当前皮肤有自定义蛋则用皮肤的，否则用默认
+        skin = app.dog_skins[app.current_skin]
+        if skin["egg_photo"] is not None:
+            self.egg_photo = skin["egg_photo"]
+            self.egg_spin_frames = skin["egg_spin_frames"]
+        else:
+            self.egg_photo = app.egg_photo
+            self.egg_spin_frames = app.egg_spin_frames
+        self.w = self.egg_photo.width()
+        self.h = self.egg_photo.height()
         self.hatched = False
         self.spinning = False
         self.spin_frame = 0
@@ -251,7 +266,7 @@ class Egg:
 
         self.label = tk.Label(
             self.window,
-            image=app.egg_photo,
+            image=self.egg_photo,
             bg=cfg["transparent_color"],
             bd=0,
             highlightthickness=0,
@@ -278,7 +293,7 @@ class Egg:
 
         if self.spinning:
             self.spin_frame = (self.spin_frame + 1) % cfg["spin_frame_count"]
-            self.label.configure(image=self.app.egg_spin_frames[self.spin_frame])
+            self.label.configure(image=self.egg_spin_frames[self.spin_frame])
             self.spin_ticks += 1
             if self.spin_ticks >= cfg["spin_ticks"]:
                 self.do_hatch()
@@ -394,6 +409,14 @@ class PluginBase:
         """狗被左键点击时调用"""
         pass
 
+    def on_collision(self, dog1, dog2):
+        """两只狗相撞时调用"""
+        pass
+
+    def on_speak(self, dog, text):
+        """狗说话时调用"""
+        pass
+
     def on_update(self, app):
         """每一帧更新时调用"""
         pass
@@ -414,38 +437,97 @@ class App:
 
         img_dir = os.path.join(self.base_dir, "images")
 
-        # ---- 加载狗皮肤（黑狗 + 鸵狗）----
-        self.dog_skins = {}  # {名称: (PhotoImage, width, height)}
-        self.dog_skin_originals = {}  # {名称: resize后的PIL Image，用于动态压扁}
-        skin_files = {
-            "black": "dogdogdog.png",
-            "tuogou": "tuogou.png",
-        }
-        for skin_name, filename in skin_files.items():
-            skin_path = os.path.join(img_dir, filename)
-            if not os.path.exists(skin_path):
-                messagebox.showerror(
-                    "启动失败",
-                    f"找不到皮肤素材：\n{skin_path}\n\n请确认 images 文件夹中有 {filename}"
-                )
-                sys.exit(1)
-            try:
-                skin_img = Image.open(skin_path).convert("RGBA")
-            except Exception as e:
-                messagebox.showerror("启动失败", f"加载皮肤 {filename} 失败：\n{e}")
-                sys.exit(1)
-            skin_ratio = cfg["dog_width"] / skin_img.width
-            skin_h = max(1, int(skin_img.height * skin_ratio))
-            skin_resized = skin_img.resize((cfg["dog_width"], skin_h), _LANCZOS)
-            skin_bg = Image.new("RGB", skin_resized.size, (255, 0, 255))
-            skin_bg.paste(skin_resized, (0, 0), skin_resized)
-            photo = ImageTk.PhotoImage(skin_bg)
-            self.dog_skins[skin_name] = (photo, cfg["dog_width"], skin_h)
-            self.dog_skin_originals[skin_name] = skin_resized
+        # ---- 扫描 skins/ 目录加载所有皮肤包 ----
+        self.dog_skins = {}  # {id: {"photo","original","w","h","name","speed_multiplier","egg_photo"}}
+        skins_dir = os.path.join(self.base_dir, "skins")
+        if os.path.exists(skins_dir):
+            for skin_dir_name in sorted(os.listdir(skins_dir)):
+                skin_dir = os.path.join(skins_dir, skin_dir_name)
+                if not os.path.isdir(skin_dir):
+                    continue
+                skin_json_path = os.path.join(skin_dir, "skin.json")
+                if not os.path.exists(skin_json_path):
+                    continue
+                try:
+                    with open(skin_json_path, "r", encoding="utf-8") as f:
+                        skin_config = json.load(f)
+                except Exception as e:
+                    print(f"[警告] 皮肤 {skin_dir_name} 的 skin.json 加载失败：{e}")
+                    continue
 
-        # 当前皮肤（默认黑狗）
-        self.current_skin = "black"
-        self.current_dog_photo, self.dog_w, self.dog_h = self.dog_skins["black"]
+                skin_id = skin_config.get("id", skin_dir_name)
+                skin_name = skin_config.get("name", skin_dir_name)
+                dog_image_file = skin_config.get("dog_image", "dog.png")
+                egg_image_file = skin_config.get("egg_image", None)
+                skin_width = skin_config.get("width", cfg["dog_width"])
+                speed_multiplier = float(skin_config.get("speed_multiplier", 1.0))
+
+                dog_image_path = os.path.join(skin_dir, dog_image_file)
+                if not os.path.exists(dog_image_path):
+                    print(f"[警告] 皮肤 {skin_name} 的狗图片不存在：{dog_image_path}")
+                    continue
+                try:
+                    skin_img = Image.open(dog_image_path).convert("RGBA")
+                except Exception as e:
+                    print(f"[警告] 皮肤 {skin_name} 图片加载失败：{e}")
+                    continue
+
+                skin_ratio = skin_width / skin_img.width
+                skin_h = max(1, int(skin_img.height * skin_ratio))
+                skin_resized = skin_img.resize((skin_width, skin_h), _LANCZOS)
+                skin_bg = Image.new("RGB", skin_resized.size, (255, 0, 255))
+                skin_bg.paste(skin_resized, (0, 0), skin_resized)
+                photo = ImageTk.PhotoImage(skin_bg)
+
+                # 皮肤自定义蛋图片（可选）
+                egg_photo = None
+                egg_spin_frames = None
+                if egg_image_file:
+                    egg_image_path = os.path.join(skin_dir, egg_image_file)
+                    if os.path.exists(egg_image_path):
+                        try:
+                            egg_img = Image.open(egg_image_path).convert("RGBA")
+                            egg_ratio = cfg["egg_width"] / egg_img.width
+                            egg_h = max(1, int(egg_img.height * egg_ratio))
+                            egg_resized = egg_img.resize((cfg["egg_width"], egg_h), _LANCZOS)
+                            egg_bg = Image.new("RGB", egg_resized.size, (255, 0, 255))
+                            egg_bg.paste(egg_resized, (0, 0), egg_resized)
+                            egg_photo = ImageTk.PhotoImage(egg_bg)
+                            # 预生成旋转帧
+                            egg_spin_frames = []
+                            for i in range(cfg["spin_frame_count"]):
+                                angle = 360 / cfg["spin_frame_count"] * i
+                                rotated = egg_resized.rotate(angle, resample=_BICUBIC, expand=False)
+                                rbg = Image.new("RGB", egg_resized.size, (255, 0, 255))
+                                rbg.paste(rotated, (0, 0), rotated)
+                                egg_spin_frames.append(ImageTk.PhotoImage(rbg))
+                        except Exception as e:
+                            print(f"[警告] 皮肤 {skin_name} 的蛋图片加载失败：{e}")
+
+                self.dog_skins[skin_id] = {
+                    "photo": photo,
+                    "original": skin_resized,
+                    "w": skin_width,
+                    "h": skin_h,
+                    "name": skin_name,
+                    "speed_multiplier": speed_multiplier,
+                    "egg_photo": egg_photo,
+                    "egg_spin_frames": egg_spin_frames,
+                }
+
+        if not self.dog_skins:
+            messagebox.showerror(
+                "启动失败",
+                "没有找到任何可用皮肤！\n请确认 skins/ 目录中至少有一个皮肤包（含 skin.json 和图片）。"
+            )
+            sys.exit(1)
+
+        # 当前皮肤（默认第一个）
+        self.current_skin = list(self.dog_skins.keys())[0]
+        _cur = self.dog_skins[self.current_skin]
+        self.current_dog_photo = _cur["photo"]
+        self.dog_w = _cur["w"]
+        self.dog_h = _cur["h"]
 
         # ---- 加载手部图片（捶打动画）----
         hand_path = os.path.join(img_dir, "hand.webp")
@@ -509,27 +591,42 @@ class App:
         self.hands = []
         self.plugins = []
 
+        # ---- 事件总线 ----
+        self.event_bus = {}  # {event_name: [callback, ...]}
+
+        # ---- 插件注册的自定义右键菜单项 ----
+        self.custom_dog_menu_items = []  # [(label, callback)]
+        self.custom_egg_menu_items = []  # [(label, callback)]
+
+        # ---- 先加载插件（插件可注册自定义菜单项）----
+        if cfg["enable_plugins"]:
+            self._load_plugins()
+
         # ---- 右键菜单 ----
-        # 狗的菜单（带换肤子菜单）
+        # 狗的菜单（带换肤子菜单 + 插件自定义项）
         self.dog_menu = tk.Menu(self.root, tearoff=0)
         self.dog_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
         self.dog_menu.add_separator()
         self.skin_menu = tk.Menu(self.dog_menu, tearoff=0)
-        self.skin_menu.add_command(label="黑狗", command=lambda: self.change_skin("black"))
-        self.skin_menu.add_command(label="鸵狗", command=lambda: self.change_skin("tuogou"))
+        for skin_id, skin_data in self.dog_skins.items():
+            self.skin_menu.add_command(
+                label=skin_data["name"],
+                command=lambda sid=skin_id: self.change_skin(sid)
+            )
         self.dog_menu.add_cascade(label="换肤", menu=self.skin_menu)
+        # 插件注册的自定义菜单项
+        for label, callback in self.custom_dog_menu_items:
+            self.dog_menu.add_command(label=label, command=callback)
         self.dog_menu.add_separator()
         self.dog_menu.add_command(label="退出", command=self.quit)
 
-        # 蛋的菜单（无换肤）
+        # 蛋的菜单（插件自定义项）
         self.egg_menu = tk.Menu(self.root, tearoff=0)
         self.egg_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
+        for label, callback in self.custom_egg_menu_items:
+            self.egg_menu.add_command(label=label, command=callback)
         self.egg_menu.add_separator()
         self.egg_menu.add_command(label="退出", command=self.quit)
-
-        # ---- 加载插件 ----
-        if cfg["enable_plugins"]:
-            self._load_plugins()
 
         # 初始一只狗
         self.spawn_dog()
@@ -570,6 +667,44 @@ class App:
             except Exception as e:
                 print(f"[Plugin] {plugin.__class__.__name__}.{method_name} 出错: {e}")
 
+    # ========== 事件总线 ==========
+    def subscribe(self, event_name, callback):
+        """插件订阅事件"""
+        if event_name not in self.event_bus:
+            self.event_bus[event_name] = []
+        self.event_bus[event_name].append(callback)
+
+    def publish(self, event_name, *args, **kwargs):
+        """发布事件，通知所有订阅者"""
+        callbacks = self.event_bus.get(event_name, [])
+        for cb in callbacks:
+            try:
+                cb(*args, **kwargs)
+            except Exception as e:
+                print(f"[EventBus] {event_name} 回调出错: {e}")
+
+    # ========== 插件注册自定义菜单 ==========
+    def register_dog_menu_item(self, label, callback):
+        """插件注册狗的右键菜单项（需在菜单创建前调用）"""
+        self.custom_dog_menu_items.append((label, callback))
+
+    def register_egg_menu_item(self, label, callback):
+        """插件注册蛋的右键菜单项（需在菜单创建前调用）"""
+        self.custom_egg_menu_items.append((label, callback))
+
+    # ========== 狗相撞检测 ==========
+    def _check_collisions(self):
+        """检测狗之间的碰撞，触发 on_collision 钩子"""
+        dogs = self.dogs
+        for i in range(len(dogs)):
+            for j in range(i + 1, len(dogs)):
+                d1, d2 = dogs[i], dogs[j]
+                # 简单矩形碰撞检测
+                if (d1.x < d2.x + d2.w and d1.x + d1.w > d2.x and
+                        d1.y < d2.y + d2.h and d1.y + d1.h > d2.y):
+                    self._call_plugins("on_collision", d1, d2)
+                    self.publish("collision", d1, d2)
+
     def spawn_dog(self, x=None, y=None, fly_out=False):
         if len(self.dogs) >= self.config["max_dogs"]:
             return None
@@ -601,6 +736,7 @@ class App:
             egg.update()
         for hand in self.hands[:]:
             hand.update()
+        self._check_collisions()
         self._call_plugins("on_update", self)
         self.root.after(self.config["animate_interval"], self.animate)
 
@@ -609,7 +745,10 @@ class App:
         if skin_name not in self.dog_skins:
             return
         self.current_skin = skin_name
-        self.current_dog_photo, self.dog_w, self.dog_h = self.dog_skins[skin_name]
+        skin = self.dog_skins[skin_name]
+        self.current_dog_photo = skin["photo"]
+        self.dog_w = skin["w"]
+        self.dog_h = skin["h"]
         for dog in self.dogs:
             dog.apply_current_skin()
 

@@ -98,11 +98,29 @@ class Plugin:
 
 ### on_dog_click(self, dog, event)
 
-小狗被鼠标左键点击时调用（在蛋生成之后调用）。
+小狗被鼠标左键点击时调用（在捶打动画触发之后调用）。
 
 参数：
 - `dog`：被点击的狗
 - `event`：tkinter 鼠标事件对象（包含 `x`, `y`, `x_root`, `y_root` 等）
+
+### on_collision(self, dog1, dog2)
+
+两只狗发生碰撞（矩形区域重叠）时调用。每帧检测，可能连续触发。
+
+参数：
+- `dog1`：第一只狗
+- `dog2`：第二只狗
+
+注意：此方法每帧都会检测碰撞，可能高频调用，避免做耗时操作。
+
+### on_speak(self, dog, text)
+
+狗"说话"时调用（目前需插件主动触发，可用于实现对话气泡）。
+
+参数：
+- `dog`：说话的狗
+- `text`：说话内容
 
 ### on_update(self, app)
 
@@ -131,14 +149,28 @@ class Plugin:
 | `app.config` | dict | 当前配置（来自 config.json，合并了默认值） |
 | `app.dogs` | list | 当前所有狗的列表 |
 | `app.eggs` | list | 当前所有蛋的列表 |
+| `app.hands` | list | 当前所有手（捶打动画）的列表 |
 | `app.plugins` | list | 当前所有已加载插件的列表 |
 | `app.root` | tk.Tk | 主窗口（隐藏状态） |
-| `app.dog_w`, `app.dog_h` | int | 狗的尺寸 |
-| `app.egg_w`, `app.egg_h` | int | 蛋的尺寸 |
-| `app.dog_photo` | PhotoImage | 狗的图片 |
-| `app.egg_photo` | PhotoImage | 蛋的静态图片 |
-| `app.egg_spin_frames` | list | 蛋的旋转帧图片列表 |
+| `app.current_skin` | str | 当前皮肤 ID |
+| `app.dog_skins` | dict | 所有已加载的皮肤包，key 为皮肤 ID，value 为皮肤信息字典 |
+| `app.dog_w`, `app.dog_h` | int | 当前皮肤的狗尺寸 |
+| `app.egg_w`, `app.egg_h` | int | 默认蛋的尺寸 |
+| `app.current_dog_photo` | PhotoImage | 当前皮肤的狗图片 |
+| `app.egg_photo` | PhotoImage | 默认蛋的静态图片 |
+| `app.egg_spin_frames` | list | 默认蛋的旋转帧图片列表 |
+| `app.hand_photo` | PhotoImage | 手的图片 |
+| `app.event_bus` | dict | 事件总线订阅表 |
 | `app.base_dir` | str | 程序所在目录的绝对路径 |
+
+皮肤信息字典（`app.dog_skins[skin_id]`）包含：
+- `photo`：PhotoImage，狗的图片
+- `original`：PIL Image，缩放后的原始图（用于动态压扁）
+- `w`, `h`：尺寸
+- `name`：皮肤显示名称
+- `speed_multiplier`：速度倍率
+- `egg_photo`：自定义蛋图片（None 表示用默认）
+- `egg_spin_frames`：自定义蛋旋转帧
 
 ### 方法
 
@@ -146,12 +178,76 @@ class Plugin:
 |------|------|
 | `app.spawn_dog(x=None, y=None, fly_out=False)` | 生成一只新狗，返回 Dog 实例或 None（达到上限时） |
 | `app.spawn_egg(x=None, y=None)` | 生成一颗新蛋 |
-| `app.show_menu(event)` | 在指定位置弹出右键菜单 |
+| `app.spawn_hand(target_dog)` | 生成一只手捶打目标狗 |
+| `app.change_skin(skin_name)` | 切换所有狗的皮肤 |
+| `app.show_dog_menu(event)` | 弹出狗的右键菜单 |
+| `app.show_egg_menu(event)` | 弹出蛋的右键菜单 |
+| `app.subscribe(event_name, callback)` | 订阅事件总线的事件 |
+| `app.publish(event_name, *args, **kwargs)` | 向事件总线发布事件 |
+| `app.register_dog_menu_item(label, callback)` | 注册狗的自定义右键菜单项（需在 `__init__` 中调用） |
+| `app.register_egg_menu_item(label, callback)` | 注册蛋的自定义右键菜单项（需在 `__init__` 中调用） |
 | `app.quit()` | 退出程序 |
 
 ### 配置项
 
 通过 `app.config` 可以读取所有配置项，完整列表见 `config.json` 或主 README。
+
+## 事件总线
+
+插件之间可以通过事件总线通信，实现解耦的插件间交互。
+
+### 订阅事件
+
+```python
+class Plugin:
+    def __init__(self, app):
+        self.app = app
+        app.subscribe("collision", self.on_collision_event)
+
+    def on_collision_event(self, dog1, dog2):
+        print(f"[事件总线] 狗相撞了！")
+```
+
+### 发布事件
+
+```python
+class Plugin:
+    def __init__(self, app):
+        self.app = app
+
+    def on_dog_click(self, dog, event):
+        # 发布自定义事件，其他插件可以订阅
+        self.app.publish("dog_was_smashed", dog, strength=1.0)
+```
+
+### 内置事件
+
+程序内置发布的事件：
+- `collision`：两只狗相撞，参数为 `(dog1, dog2)`
+
+你可以发布任意名称的自定义事件，其他插件通过 `subscribe` 监听。
+
+## 自定义右键菜单
+
+插件可以在狗或蛋的右键菜单中添加自定义菜单项，必须在插件的 `__init__` 方法中注册（菜单在插件加载后创建）。
+
+```python
+class Plugin:
+    def __init__(self, app):
+        self.app = app
+        app.register_dog_menu_item("给这只狗加速", self.speed_up_dog)
+        app.register_egg_menu_item("立刻孵化", self.hatch_egg)
+
+    def speed_up_dog(self):
+        # 注意：菜单回调没有直接参数，需要自己追踪目标
+        # 可以在 on_dog_click 中记录最后点击的狗
+        pass
+
+    def hatch_egg(self):
+        pass
+```
+
+注意：菜单回调不接收事件参数。如果需要知道是哪只狗/蛋被右键，可以在 `on_dog_click` 中记录，但右键点击不会触发 `on_dog_click`（那是左键）。目前右键目标追踪需要插件自己实现（如绑定额外事件）。
 
 ## 完整示例
 
@@ -219,6 +315,30 @@ class Plugin:
     def on_dog_click(self, dog, event):
         self.click_count += 1
         print(f"[点击统计] 总点击次数：{self.click_count}")
+```
+
+### 示例五：碰撞特效插件（事件总线 + 自定义菜单）
+
+两只狗相撞时在控制台打印，并注册一个自定义右键菜单项。
+
+```python
+# plugins/collision_effect.py
+
+class Plugin:
+    def __init__(self, app):
+        self.app = app
+        self.collision_count = 0
+        # 订阅碰撞事件
+        app.subscribe("collision", self.on_collision_event)
+        # 注册自定义菜单项
+        app.register_dog_menu_item("查看碰撞次数", self.show_collision_count)
+
+    def on_collision_event(self, dog1, dog2):
+        self.collision_count += 1
+        print(f"[碰撞特效] 第 {self.collision_count} 次碰撞！")
+
+    def show_collision_count(self):
+        print(f"[碰撞特效] 当前总碰撞次数：{self.collision_count}")
 ```
 
 ## 注意事项
