@@ -83,7 +83,7 @@ class Dog:
 
         self.label = tk.Label(
             self.window,
-            image=app.dog_photo,
+            image=app.current_dog_photo,
             bg=cfg["transparent_color"],
             bd=0,
             highlightthickness=0,
@@ -91,7 +91,7 @@ class Dog:
         self.label.pack()
 
         self.label.bind("<Button-1>", self.on_left_click)
-        self.label.bind("<Button-3>", app.show_menu)
+        self.label.bind("<Button-3>", app.show_dog_menu)
 
         screen_w = self.window.winfo_screenwidth()
         screen_h = self.window.winfo_screenheight()
@@ -178,6 +178,16 @@ class Dog:
         self.app.spawn_egg(self.x + offset_x + self.w // 4, self.y)
         self.app._call_plugins("on_dog_click", self, event)
 
+    def apply_current_skin(self):
+        """切换到当前皮肤，保持底部位置不变"""
+        photo, w, h = self.app.dog_skins[self.app.current_skin]
+        bottom = self.y + self.h
+        self.w = w
+        self.h = h
+        self.y = max(0, bottom - h)
+        self.label.configure(image=photo)
+        self.window.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
+
     def destroy(self):
         self.window.destroy()
 
@@ -209,7 +219,7 @@ class Egg:
             highlightthickness=0,
         )
         self.label.pack()
-        self.label.bind("<Button-3>", app.show_menu)
+        self.label.bind("<Button-3>", app.show_egg_menu)
 
         screen_w = self.window.winfo_screenwidth()
         screen_h = self.window.winfo_screenheight()
@@ -308,28 +318,36 @@ class App:
 
         img_dir = os.path.join(self.base_dir, "images")
 
-        # ---- 加载狗图片 ----
-        dog_path = os.path.join(img_dir, "dogdogdog.png")
-        if not os.path.exists(dog_path):
-            messagebox.showerror(
-                "启动失败",
-                f"找不到小狗素材：\n{dog_path}\n\n请确认 images 文件夹中有 dogdogdog.png"
-            )
-            sys.exit(1)
-        try:
-            dog_original = Image.open(dog_path).convert("RGBA")
-        except Exception as e:
-            messagebox.showerror("启动失败", f"加载小狗素材失败：\n{e}")
-            sys.exit(1)
+        # ---- 加载狗皮肤（黑狗 + 鸵狗）----
+        self.dog_skins = {}  # {名称: (PhotoImage, width, height)}
+        skin_files = {
+            "black": "dogdogdog.png",
+            "tuogou": "tuogou.png",
+        }
+        for skin_name, filename in skin_files.items():
+            skin_path = os.path.join(img_dir, filename)
+            if not os.path.exists(skin_path):
+                messagebox.showerror(
+                    "启动失败",
+                    f"找不到皮肤素材：\n{skin_path}\n\n请确认 images 文件夹中有 {filename}"
+                )
+                sys.exit(1)
+            try:
+                skin_img = Image.open(skin_path).convert("RGBA")
+            except Exception as e:
+                messagebox.showerror("启动失败", f"加载皮肤 {filename} 失败：\n{e}")
+                sys.exit(1)
+            skin_ratio = cfg["dog_width"] / skin_img.width
+            skin_h = max(1, int(skin_img.height * skin_ratio))
+            skin_resized = skin_img.resize((cfg["dog_width"], skin_h), _LANCZOS)
+            skin_bg = Image.new("RGB", skin_resized.size, (255, 0, 255))
+            skin_bg.paste(skin_resized, (0, 0), skin_resized)
+            photo = ImageTk.PhotoImage(skin_bg)
+            self.dog_skins[skin_name] = (photo, cfg["dog_width"], skin_h)
 
-        dog_ratio = cfg["dog_width"] / dog_original.width
-        dog_h = max(1, int(dog_original.height * dog_ratio))
-        dog_resized = dog_original.resize((cfg["dog_width"], dog_h), _LANCZOS)
-        dog_bg = Image.new("RGB", dog_resized.size, (255, 0, 255))
-        dog_bg.paste(dog_resized, (0, 0), dog_resized)
-        self.dog_photo = ImageTk.PhotoImage(dog_bg)
-        self.dog_w = cfg["dog_width"]
-        self.dog_h = dog_h
+        # 当前皮肤（默认黑狗）
+        self.current_skin = "black"
+        self.current_dog_photo, self.dog_w, self.dog_h = self.dog_skins["black"]
 
         # ---- 加载鸵鸟蛋图片 ----
         egg_path = os.path.join(img_dir, "鸵鸟蛋.webp")
@@ -370,10 +388,22 @@ class App:
         self.plugins = []
 
         # ---- 右键菜单 ----
-        self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
-        self.menu.add_separator()
-        self.menu.add_command(label="退出", command=self.quit)
+        # 狗的菜单（带换肤子菜单）
+        self.dog_menu = tk.Menu(self.root, tearoff=0)
+        self.dog_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
+        self.dog_menu.add_separator()
+        self.skin_menu = tk.Menu(self.dog_menu, tearoff=0)
+        self.skin_menu.add_command(label="黑狗", command=lambda: self.change_skin("black"))
+        self.skin_menu.add_command(label="鸵狗", command=lambda: self.change_skin("tuogou"))
+        self.dog_menu.add_cascade(label="换肤", menu=self.skin_menu)
+        self.dog_menu.add_separator()
+        self.dog_menu.add_command(label="退出", command=self.quit)
+
+        # 蛋的菜单（无换肤）
+        self.egg_menu = tk.Menu(self.root, tearoff=0)
+        self.egg_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
+        self.egg_menu.add_separator()
+        self.egg_menu.add_command(label="退出", command=self.quit)
 
         # ---- 加载插件 ----
         if cfg["enable_plugins"]:
@@ -445,8 +475,22 @@ class App:
         self._call_plugins("on_update", self)
         self.root.after(self.config["animate_interval"], self.animate)
 
-    def show_menu(self, event):
-        self.menu.tk_popup(event.x_root, event.y_root)
+    def change_skin(self, skin_name):
+        """切换所有狗的皮肤，保持底部位置不变"""
+        if skin_name not in self.dog_skins:
+            return
+        self.current_skin = skin_name
+        self.current_dog_photo, self.dog_w, self.dog_h = self.dog_skins[skin_name]
+        for dog in self.dogs:
+            dog.apply_current_skin()
+
+    def show_dog_menu(self, event):
+        """右键狗：弹出带换肤的菜单"""
+        self.dog_menu.tk_popup(event.x_root, event.y_root)
+
+    def show_egg_menu(self, event):
+        """右键蛋：弹出简单菜单"""
+        self.egg_menu.tk_popup(event.x_root, event.y_root)
 
     def quit(self):
         self._call_plugins("on_quit", self)
