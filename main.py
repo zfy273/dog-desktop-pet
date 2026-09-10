@@ -598,6 +598,10 @@ class App:
         self.custom_dog_menu_items = []  # [(label, callback)]
         self.custom_egg_menu_items = []  # [(label, callback)]
 
+        # 记录最后一次右键点击的位置（用于菜单中生蛋）
+        self._last_click_x = 0
+        self._last_click_y = 0
+
         # ---- 先加载插件（插件可注册自定义菜单项）----
         if cfg["enable_plugins"]:
             self._load_plugins()
@@ -605,7 +609,7 @@ class App:
         # ---- 右键菜单 ----
         # 狗的菜单（带换肤子菜单 + 插件自定义项）
         self.dog_menu = tk.Menu(self.root, tearoff=0)
-        self.dog_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
+        self.dog_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg(self._last_click_x, self._last_click_y))
         self.dog_menu.add_separator()
         self.skin_menu = tk.Menu(self.dog_menu, tearoff=0)
         for skin_id, skin_data in self.dog_skins.items():
@@ -622,7 +626,7 @@ class App:
 
         # 蛋的菜单（插件自定义项）
         self.egg_menu = tk.Menu(self.root, tearoff=0)
-        self.egg_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg())
+        self.egg_menu.add_command(label="新增一颗蛋", command=lambda: self.spawn_egg(self._last_click_x, self._last_click_y))
         for label, callback in self.custom_egg_menu_items:
             self.egg_menu.add_command(label=label, command=callback)
         self.egg_menu.add_separator()
@@ -753,11 +757,15 @@ class App:
             dog.apply_current_skin()
 
     def show_dog_menu(self, event):
-        """右键狗：弹出带换肤的菜单"""
+        """右键狗：弹出带换肤的菜单，记录点击位置"""
+        self._last_click_x = event.x_root
+        self._last_click_y = event.y_root
         self.dog_menu.tk_popup(event.x_root, event.y_root)
 
     def show_egg_menu(self, event):
-        """右键蛋：弹出简单菜单"""
+        """右键蛋：弹出简单菜单，记录点击位置"""
+        self._last_click_x = event.x_root
+        self._last_click_y = event.y_root
         self.egg_menu.tk_popup(event.x_root, event.y_root)
 
     def quit(self):
