@@ -119,6 +119,10 @@ class Dog:
         self.original_h = self.h
         self._squash_photo = None  # 保持动态图片引用防止GC
 
+        # 被砸计数，达到阈值后变成狗饼
+        self.hit_count = 0
+        self.pancake_threshold = 50
+
     def _random_speed(self):
         """每只狗独立随机速度和方向，应用当前皮肤的速度倍率"""
         cfg = self.app.config
@@ -372,6 +376,15 @@ class Hand:
             if self.y + self.h >= dog_top:
                 self.hit = True
                 self.target.squash()
+                self.target.hit_count += 1
+                # 达到阈值后变成狗饼
+                if self.target.hit_count >= self.target.pancake_threshold:
+                    px = self.target.x + self.target.w // 2 - self.app.pancake_w // 2
+                    py = self.target.y + self.target.h - self.app.pancake_h
+                    self.app.spawn_dog_pancake(px, py)
+                    if self.target in self.app.dogs:
+                        self.app.dogs.remove(self.target)
+                    self.target.destroy()
                 self.stay_ticks = 6  # 打中后停留6帧
             self.window.geometry(f"+{int(self.x)}+{int(self.y)}")
         else:
@@ -385,6 +398,59 @@ class Hand:
         self.window.destroy()
         if self in self.app.hands:
             self.app.hands.remove(self)
+
+
+class DogPancake:
+    """狗饼：狗被砸50下后变成，重力掉落到底部后停住"""
+
+    def __init__(self, app, x, y):
+        self.app = app
+        cfg = app.config
+
+        self.w = app.pancake_w
+        self.h = app.pancake_h
+
+        self.window = tk.Toplevel(app.root)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-transparentcolor", cfg["transparent_color"])
+        self.window.configure(bg=cfg["transparent_color"])
+
+        self.label = tk.Label(
+            self.window,
+            image=app.pancake_photo,
+            bg=cfg["transparent_color"],
+            bd=0,
+            highlightthickness=0,
+        )
+        self.label.pack()
+
+        screen_w = self.window.winfo_screenwidth()
+        screen_h = self.window.winfo_screenheight()
+        x = max(0, min(x, screen_w - self.w))
+        y = max(0, min(y, screen_h - self.h))
+        self.x = float(x)
+        self.y = float(y)
+        self.window.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
+
+        self.vy = 0.0
+        self.landed = False
+
+    def update(self):
+        if self.landed:
+            return
+        cfg = self.app.config
+        self.vy += cfg["gravity"]
+        self.y += self.vy
+        screen_h = self.window.winfo_screenheight()
+        if self.y >= screen_h - self.h:
+            self.y = screen_h - self.h
+            self.vy = 0.0
+            self.landed = True
+        self.window.geometry(f"+{int(self.x)}+{int(self.y)}")
+
+    def destroy(self):
+        self.window.destroy()
 
 
 class PluginBase:
@@ -552,6 +618,29 @@ class App:
         self.hand_w = hand_w
         self.hand_h = hand_h
 
+        # ---- 加载狗饼图片（被砸50下后变成）----
+        pancake_path = os.path.join(img_dir, "狗饼.png")
+        if not os.path.exists(pancake_path):
+            messagebox.showerror(
+                "启动失败",
+                f"找不到狗饼素材：\n{pancake_path}\n\n请确认 images 文件夹中有 狗饼.png"
+            )
+            sys.exit(1)
+        try:
+            pancake_original = Image.open(pancake_path).convert("RGBA")
+        except Exception as e:
+            messagebox.showerror("启动失败", f"加载狗饼素材失败：\n{e}")
+            sys.exit(1)
+        pancake_w = 120
+        pancake_ratio = pancake_w / pancake_original.width
+        pancake_h = max(1, int(pancake_original.height * pancake_ratio))
+        pancake_resized = pancake_original.resize((pancake_w, pancake_h), _LANCZOS)
+        pancake_bg = Image.new("RGB", pancake_resized.size, (255, 0, 255))
+        pancake_bg.paste(pancake_resized, (0, 0), pancake_resized)
+        self.pancake_photo = ImageTk.PhotoImage(pancake_bg)
+        self.pancake_w = pancake_w
+        self.pancake_h = pancake_h
+
         # ---- 加载鸵鸟蛋图片 ----
         egg_path = os.path.join(img_dir, "鸵鸟蛋.webp")
         if not os.path.exists(egg_path):
@@ -589,6 +678,7 @@ class App:
         self.dogs = []
         self.eggs = []
         self.hands = []
+        self.dog_pancakes = []
         self.plugins = []
 
         # ---- 事件总线 ----
@@ -733,6 +823,11 @@ class App:
         hand = Hand(self, target_dog)
         self.hands.append(hand)
 
+    def spawn_dog_pancake(self, x, y):
+        """生成狗饼（狗被砸50下后变成）"""
+        pancake = DogPancake(self, x, y)
+        self.dog_pancakes.append(pancake)
+
     def animate(self):
         for dog in self.dogs:
             dog.update()
@@ -740,6 +835,8 @@ class App:
             egg.update()
         for hand in self.hands[:]:
             hand.update()
+        for pancake in self.dog_pancakes:
+            pancake.update()
         self._check_collisions()
         self._call_plugins("on_update", self)
         self.root.after(self.config["animate_interval"], self.animate)
@@ -774,6 +871,8 @@ class App:
             dog.destroy()
         for egg in self.eggs:
             egg.destroy()
+        for pancake in self.dog_pancakes:
+            pancake.destroy()
         self.root.destroy()
         sys.exit(0)
 
