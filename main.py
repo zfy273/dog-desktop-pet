@@ -367,6 +367,11 @@ class Hand:
         self.window.geometry(f"{self.w}x{self.h}+{int(self.x)}+{int(self.y)}")
 
     def update(self):
+        # 目标狗已被销毁（变成狗饼或其他原因），手也消失
+        if self.target not in self.app.dogs:
+            self.destroy()
+            return False
+
         if not self.hit:
             # 重力加速下落
             self.dy += 2.5
@@ -385,6 +390,8 @@ class Hand:
                     if self.target in self.app.dogs:
                         self.app.dogs.remove(self.target)
                     self.target.destroy()
+                    self.destroy()  # 狗已变成狗饼，手直接消失
+                    return False
                 self.stay_ticks = 6  # 打中后停留6帧
             self.window.geometry(f"+{int(self.x)}+{int(self.y)}")
         else:
@@ -829,15 +836,34 @@ class App:
         self.dog_pancakes.append(pancake)
 
     def animate(self):
-        for dog in self.dogs:
-            dog.update()
-        for egg in self.eggs:
-            egg.update()
+        for dog in self.dogs[:]:
+            try:
+                dog.update()
+            except Exception as e:
+                print(f"[错误] dog.update 异常: {e}")
+        for egg in self.eggs[:]:
+            try:
+                egg.update()
+            except Exception as e:
+                print(f"[错误] egg.update 异常: {e}")
         for hand in self.hands[:]:
-            hand.update()
-        for pancake in self.dog_pancakes:
-            pancake.update()
-        self._check_collisions()
+            try:
+                hand.update()
+            except Exception as e:
+                print(f"[错误] hand.update 异常: {e}")
+                try:
+                    hand.destroy()
+                except Exception:
+                    pass
+        for pancake in self.dog_pancakes[:]:
+            try:
+                pancake.update()
+            except Exception as e:
+                print(f"[错误] pancake.update 异常: {e}")
+        try:
+            self._check_collisions()
+        except Exception as e:
+            print(f"[错误] collision check 异常: {e}")
         self._call_plugins("on_update", self)
         self.root.after(self.config["animate_interval"], self.animate)
 
